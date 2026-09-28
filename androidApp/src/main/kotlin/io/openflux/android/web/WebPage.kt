@@ -35,6 +35,8 @@ class WebPage(
     private val startUrl: String,
     private val proxy: String = "",
     private val scripts: Boolean = false,
+    /** null keeps WebView's own; Yandex pages get the core's (see [USER_AGENT]). */
+    private val userAgent: String? = USER_AGENT,
 ) : BrowserPage {
     @Volatile var url: String = startUrl
         private set
@@ -54,12 +56,20 @@ class WebPage(
             (existing.parent as? ViewGroup)?.removeView(existing)
             return existing
         }
+        // Debug builds: chrome://inspect can look inside the sign-in pages.
+        if (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
         val web = WebView(context)
+        // AndroidView would give it WRAP_CONTENT: the WebView then sizes to
+        // its content and pages see a viewport 0 px high (VK ID stayed blank,
+        // Yandex's bottom sheets closed as soon as they opened).
+        web.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             // The UA the core fetches the document with: a check's pass may be bound to it.
-            userAgentString = USER_AGENT
+            if (userAgent != null) userAgentString = userAgent
             useWideViewPort = true
             loadWithOverviewMode = true
             builtInZoomControls = true
@@ -74,6 +84,10 @@ class WebPage(
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 this@WebPage.url = url
                 loading = true
+                // Where a sign-in goes, for adb logcat -s OpenFluxWeb; no query (tokens live there).
+                if (view.context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+                    android.util.Log.d("OpenFluxWeb", url.substringBefore('?').substringBefore('#'))
+                }
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -120,6 +134,12 @@ class WebPage(
         } finally {
             results.remove(id)
         }
+    }
+
+    /** Sends the page to [url] once it is on screen. */
+    fun load(url: String) {
+        val web = view
+        if (web != null) web.post { if (!closed) web.loadUrl(url) }
     }
 
     /** The Cookie header the page's cookie jar sends to [url]. */

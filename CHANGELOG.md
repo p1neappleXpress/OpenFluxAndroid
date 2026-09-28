@@ -3,6 +3,37 @@
 All notable changes to OpenFluxAndroid. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Developer mode (ten taps on the app version in Settings → About) shows
+  the «Аккаунты» tab: sign in once to Yandex or Mail.ru in a WebView; the
+  app keeps only the session (owner-only `accounts.json`, never in backups,
+  logs, QR codes or links) and shows each service's status — signed in,
+  expired, or asking for a check. Sessions are rechecked every 30 minutes;
+  «Войти заново» is one button.
+- «Создать документ» makes the channel's document with the saved account:
+  Yandex — a document on Disk with editing by link; Mail.ru — a document in
+  Cloud (`/openflux`), published and switched to editing by link. In
+  developer mode the node wizard offers it too, in the same sign-in window.
+- The Yandex sign-in goes into the core's cookie store before it connects,
+  and to your own node (from the wizard) over the tunnel. The Mail.ru account
+  is never put into the core: its transport opens the document anonymously.
+- Cups.online: «Сгенерировать комнаты» in the profile editor opens four
+  rooms without a node.
+- «Своя нода»: a new channel is no longer Yandex-only. Step 2 picks any mix
+  of a Yandex document (your own link), a Mail.ru public document and
+  cups.online rooms (created automatically), with direct always on as the
+  backup; the link and the saved profile carry all of them.
+- «Автообновление ядра» on the plan step (on by default): the server's
+  `openflux-node-update.timer` checks the newest `node-v*` release every
+  6 hours, verifies it against the release's `node-install.sh` and
+  `SHA256SUMS`, restarts the channels and rolls back if one does not stay
+  up.
+- Bumps `OpenFlux` to [`ee7cf56`](https://github.com/p1neappleXpress/OpenFlux/commit/ee7cf56d27549018d5fc3f6a5a31445fff55380c)
+  and `shared` to [`b23354a`](https://github.com/p1neappleXpress/OpenFluxClientShared/commit/b23354ab2ecf8968eca8a3d1b7b66f6f74be07aa).
+
 ## [2.1.0] - 2026-09-28
 
 ### Changed

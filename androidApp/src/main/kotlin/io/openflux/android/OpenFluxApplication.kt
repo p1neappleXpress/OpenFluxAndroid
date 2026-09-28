@@ -1,5 +1,12 @@
 package io.openflux.android
 
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import io.openflux.desktop.service.Accounts
+import io.openflux.desktop.data.HttpSessionProbe
+import io.openflux.desktop.data.FileAccountRepository
+import io.openflux.android.web.WebViewAccountBrowser
 import android.app.Application
 import android.content.Context
 import io.openflux.android.core.AndroidConnectionService
@@ -31,14 +38,22 @@ class OpenFluxApplication : Application() {
         super.onCreate()
         // On a phone the VPN is what "connected" means; the proxy is the opt-out.
         val settings = FileSettingsRepository(filesDir, defaults = AppSettings(fullTunnel = true))
-        connection = AndroidConnectionService(this, settings, bridge)
+        val accounts = Accounts(
+            repo = FileAccountRepository(noBackupFilesDir),
+            browser = WebViewAccountBrowser(),
+            probe = HttpSessionProbe(),
+            now = System::currentTimeMillis,
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        )
+        connection = AndroidConnectionService(this, settings, bridge, accounts)
         container = AppContainer(
             profiles = FileProfileRepository(filesDir),
             settings = settings,
             connection = connection,
             platform = AndroidPlatformServices(this, bridge),
             shareCodec = CoreShareLinkCodec(MobileCoreLinks),
-            nodeWizard = AndroidNodeWizard(),
+            nodeWizard = AndroidNodeWizard(accounts),
+            accounts = accounts,
         )
     }
 }

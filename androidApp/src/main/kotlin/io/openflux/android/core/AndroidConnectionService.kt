@@ -1,5 +1,12 @@
 package io.openflux.android.core
 
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.drop
+import io.openflux.desktop.service.Accounts
+import io.openflux.desktop.model.ProfileSource
+import io.openflux.desktop.model.AccountKind
+import io.openflux.desktop.model.AccountCookies
+import io.openflux.desktop.data.CookieStoreSeeder
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -57,6 +64,7 @@ class AndroidConnectionService(
     private val context: Context,
     private val settings: SettingsRepository,
     private val bridge: ActivityBridge,
+    private val accounts: Accounts,
 ) : ConnectionService {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /** connect/disconnect/failures one at a time. */
@@ -94,6 +102,8 @@ class AndroidConnectionService(
         @Volatile var started = false
         @Volatile var connectedSince = 0L
         @Volatile var notice = ""
+        /** The sign-ins handed to the exit this run, not to send the same twice. */
+        val pushed = java.util.concurrent.ConcurrentHashMap<AccountKind, Map<String, String>>()
     }
 
     @Volatile private var run: Run? = null
@@ -105,8 +115,46 @@ class AndroidConnectionService(
     @Volatile private var captchaUrl: String? = null
     @Volatile private var captchaSolved = false
 
+    private val cookieStore get() = File(context.filesDir, "transport-cookies.json")
+
     init {
-        Mobile.setCookieStorePath(File(context.filesDir, "transport-cookies.json").path)
+        Mobile.setCookieStorePath(cookieStore.path)
+        // A fresh sign-in (after it expired) goes on to your own node at once.
+        scope.launch {
+            accounts.sessions.drop(1).collect { sessions ->
+                val current = run ?: return@collect
+                if (_state.value !is ConnectionState.Connected || !ownsExit(current)) return@collect
+                for ((kind, session) in sessions) {
+                    if (!kind.opensSignedIn) continue
+                    if (!session.expired && current.pushed[kind] != session.cookies) pushQuietly(current, kind)
+                }
+            }
+        }
+    }
+
+    /** Your own node (from the wizard): it may get your sign-in without asking. */
+    private fun ownsExit(run: Run) =
+        run.kind != Kind.Exit && run.profile.session && run.profile.source == ProfileSource.Node && run.settings.useAccountSessions
+
+    private fun pushQuietly(run: Run, kind: AccountKind) {
+        runCatching { pushTo(run, kind) }
+            .onFailure { log(LogLevel.Warning, "Не удалось передать вход ${kind.label} ноде: ${it.message}") }
+    }
+
+    override suspend fun pushAccountToExit(kind: AccountKind): Int {
+        val current = run ?: throw IllegalStateException("Нет подключения к ноде")
+        return withContext(Dispatchers.IO) { pushTo(current, kind) }
+    }
+
+    private fun pushTo(run: Run, kind: AccountKind): Int {
+        check(run.kind != Kind.Exit && run.profile.session) { "Передать вход можно только ноде профиля Session" }
+        val session = accounts.validSession(kind) ?: throw IllegalStateException("Сначала войдите в ${kind.label}")
+        val types = kind.transports.joinToString(",") { it.cliName }
+        val sent = Mobile.offerExitCookies(types, AccountCookies.header(session.cookies)).toInt()
+        check(sent > 0) { "В профиле нет транспортов ${kind.label}" }
+        run.pushed[kind] = session.cookies
+        log(LogLevel.Success, "Вход ${kind.label} передан ноде ($sent транспорт.)")
+        return sent
     }
 
     // ---- connect / disconnect ----
@@ -144,6 +192,13 @@ class AndroidConnectionService(
             return
         }
         bridge.requestNotifications()
+        if (current.useAccountSessions) {
+            // The library reads its store once, when given the path.
+            runCatching {
+                CookieStoreSeeder.seed(cookieStore, profile, accounts.sessions.value) { "${it.type.cliName} ${it.value}" }
+                Mobile.setCookieStorePath(cookieStore.path)
+            }.onFailure { log(LogLevel.Warning, "Вход в аккаунт не подставлен: ${it.message}") }
+        }
         val next = Run(profile, current, kind)
         run = next
         _socksAddress.value = if (kind == Kind.Proxy) proxyAddress(current) else null
@@ -413,6 +468,9 @@ class AndroidConnectionService(
             if (first) log(LogLevel.Success, if (current.kind == Kind.Exit) "Нода запущена" else "Подключено к ноде")
             else log(LogLevel.Info, "Связь с нодой восстановлена")
             if (current.kind != Kind.Exit) refreshExitAddress()
+            if (first && ownsExit(current)) scope.launch {
+                accounts.sessions.value.values.filter { !it.expired && it.kind.opensSignedIn }.forEach { pushQuietly(current, it.kind) }
+            }
         }
     }
 

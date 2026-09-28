@@ -1,5 +1,6 @@
 package io.openflux.android.platform
 
+import io.openflux.desktop.data.CupsRooms
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -101,6 +102,8 @@ class AndroidPlatformServices(
     }
 
     override fun now(): Long = System.currentTimeMillis()
+
+    override suspend fun newCupsRooms(): String = CupsRooms.create()
 
     override suspend fun latestRelease(): String? = withContext(Dispatchers.IO) {
         runCatching {
