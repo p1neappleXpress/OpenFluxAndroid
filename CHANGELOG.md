@@ -5,7 +5,12 @@ All notable changes to OpenFluxAndroid. Format loosely follows
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-01
+
 ### Added
+
+- With carriers at equal top priority the badge and «Сейчас через» name all of
+  them ("Board + Volga 2"), as the core spreads traffic over the whole group.
 
 - «Без сервера»: a new profile mode where the exit is a small PHP program on an
   ordinary web hosting (free or paid, any with PHP and FTP/FTPS) instead of your
