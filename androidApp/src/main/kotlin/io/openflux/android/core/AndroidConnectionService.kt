@@ -403,7 +403,12 @@ class AndroidConnectionService(
                 val upSpeed = if (lastAt == 0L) 0 else ((totalUp - lastUp) / seconds).toLong().coerceAtLeast(0)
                 val downSpeed = if (lastAt == 0L) 0 else ((totalDown - lastDown) / seconds).toLong().coerceAtLeast(0)
                 lastUp = totalUp; lastDown = totalDown; lastAt = now
-                _traffic.value = TrafficStats(upSpeed, downSpeed, totalUp, totalDown, Mobile.currentTransport().orEmpty(), live = true)
+                _traffic.value = TrafficStats(
+                    upSpeed, downSpeed, totalUp, totalDown,
+                    activeTransport = Mobile.currentTransport().orEmpty(),
+                    activeTransports = Mobile.currentTransports().orEmpty().split(',').filter(String::isNotEmpty),
+                    live = true,
+                )
                 // A VPN counts as connected once its interface is up.
                 if (current.kind != Kind.Vpn || current.tunnel != null) {
                     if (up) markConnected(current) else markReconnecting(current)
