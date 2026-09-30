@@ -134,6 +134,10 @@ class AndroidConnectionService(
             fail(profile, it)
             return
         }
+        if (profile.stream && current.mode == ConnectionMode.Exit) {
+            fail(profile, "Режим без сервера работает только как клиент: выхода в нём нет, сервер заменяет PHP-хостинг")
+            return
+        }
         val kind = when {
             current.mode == ConnectionMode.Exit -> Kind.Exit
             current.fullTunnel -> Kind.Vpn
@@ -276,6 +280,16 @@ class AndroidConnectionService(
         val profile = current.profile
         val secret = profile.secret
         Mobile.setDebugLevel(current.settings.debugLevel.toLong())
+        // The mode without a server: a PHP node on a web hosting, over cups.online or a Mail.ru document.
+        if (profile.stream) {
+            val type = profile.transport.cliName
+            val url = profile.value.trim()
+            return when (current.kind) {
+                Kind.Vpn -> Mobile.startStreamPacket(type, url)
+                Kind.Proxy -> Mobile.startStreamProxy(type, url, proxyAddress(current.settings), "", "", "")
+                Kind.Exit -> "Режим без сервера работает только как клиент"
+            }.orEmpty()
+        }
         return if (profile.session) {
             val specs = CoreSpecs.session(profile, exit = current.kind == Kind.Exit, directPort = current.settings.exitDirectPort)
             when (current.kind) {

@@ -7,6 +7,17 @@ All notable changes to OpenFluxAndroid. Format loosely follows
 
 ### Added
 
+- «Без сервера»: a new profile mode where the exit is a small PHP program on an
+  ordinary web hosting (free or paid, any with PHP and FTP/FTPS) instead of your
+  own server. The wizard (Профили → «Без сервера») takes the FTP data and the
+  site's address, creates a cups.online room (or takes a Mail.ru document),
+  uploads the node, checks that the site runs it, starts it and connects
+  through it before saving the profile. Works as the system-wide VPN or as a
+  local SOCKS5 proxy; no key to keep, TCP on ports 80 and 443 only. The node
+  renews itself while it is used, and connecting a profile made this way first
+  asks its node to run when the hosting is reachable. Its `openflux://` link and
+  QR carry the mode (never the node's token).
+
 - «Своя нода»: a new channel is no longer Yandex-only. Step 2 picks any mix
   of a Yandex document (your own link), a Mail.ru public document and
   cups.online rooms (created automatically), with direct always on as the
