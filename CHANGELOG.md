@@ -17,9 +17,12 @@ All notable changes to OpenFluxAndroid. Format loosely follows
   (no FTP), takes a key of your own on an FTP install, opens the node's panel in
   the browser, and shows which generation serves («работает · поколение N»).
   Bumps `OpenFlux` to
-  [`d245db7`](https://github.com/p1neappleXpress/OpenFlux/commit/d245db7) and
+  [`bb55dc3`](https://github.com/p1neappleXpress/OpenFlux/commit/bb55dc3) and
   `shared` to
   [`98572e2`](https://github.com/p1neappleXpress/OpenFluxClientShared/commit/98572e2).
+- The core's Yandex Boards moves packets as `modify-objects` text objects (the
+  board no longer relays `notify-position`), and Yandex Docs and Mail.ru Docs
+  send the web client's `saveChanges` stream built from the live session.
 
 ### Added
 
