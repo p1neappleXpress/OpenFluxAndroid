@@ -5,6 +5,21 @@ All notable changes to OpenFluxAndroid. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **MTS-Link and Bitrix24 whiteboards as transports** (`mtslink`, `bitrix`, by trader52): both peers open
+  the same board and the packets ride the cursor position, like Yandex Board. Signed with the OpenFlux key,
+  updated from [OpenFluxTransports](https://github.com/p1neappleXpress/OpenFluxTransports).
+- **All the official transports come with the app** (Settings → Experimental features): the five already
+  here, `mtslink`, `bitrix` and the two MAX ones (`oneme-iceinject`, `oneme-webrtc`). A new release adds
+  the ones the phone or computer has not been offered yet; a transport you deleted stays deleted, one you
+  switched off stays off.
+
+### Changed
+
+- **A transport's settings page and a transport's own setup page open over the whole window**, not in a
+  dialog 700 dp wide. The Yandex check keeps its dialog.
+
 ## [2.3.1] - 2026-10-07
 
 Hotfix: the core 0.4.1.
