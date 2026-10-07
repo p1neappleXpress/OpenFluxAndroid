@@ -5,6 +5,21 @@ All notable changes to OpenFluxAndroid. Format loosely follows
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-10-07
+
+Hotfix: the core 0.4.2.
+
+### Fixed
+
+- **Mail.ru Docs: a link that only lets the document be read no longer drops the connection every few
+  seconds.** The transport sent the editor's `saveChanges` now and then, and for a link without edit rights
+  (what most public links are) the server closed the connection on every one, so the channel was up for
+  moments between reconnects. It is not sent there any more (core 0.4.2, `OpenFlux` bumped to
+  [`74cac6d`](https://github.com/p1neappleXpress/OpenFlux/commit/74cac6d)). The Engine.IO / Socket.IO
+  handshake is also completed before the auth is sent (thanks to Novarg93,
+  [OpenFlux#147](https://github.com/p1neappleXpress/OpenFlux/pull/147)). Exit nodes on a VDS need the same
+  core: «Своя нода» installs `node-v1.2.2`.
+
 ## [2.3.1] - 2026-10-07
 
 Hotfix: the core 0.4.1.
