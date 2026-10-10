@@ -78,6 +78,7 @@ android {
 }
 
 dependencies {
+    testImplementation(libs.kotlin.testJunit)
     implementation(project(":shared"))
     // The OpenFlux core (gomobile), built by scripts/build-android-core.sh.
     implementation(files("libs/openflux.aar"))
