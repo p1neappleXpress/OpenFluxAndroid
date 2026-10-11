@@ -540,7 +540,7 @@ class AndroidConnectionService(
             url, reason, remote,
             html = html.ifEmpty { null }, own = own, transport = Mobile.pendingCaptchaTransport().orEmpty(),
         )
-        openPage(url, proxy, html, own)
+        openPage(url, proxy, allowAutoSubmit = !remote, html, own)
         if (!context.openFlux.visible) CoreService.notifyCaptcha(context, remote, login = reason == "login")
     }
 
@@ -553,10 +553,10 @@ class AndroidConnectionService(
 
     override fun openCaptcha() {
         val prompt = _captcha.value ?: return
-        openPage(prompt.url, Mobile.pendingCaptchaProxy().orEmpty(), prompt.html.orEmpty(), prompt.own)
+        openPage(prompt.url, Mobile.pendingCaptchaProxy().orEmpty(), allowAutoSubmit = !prompt.remote, prompt.html.orEmpty(), prompt.own)
     }
 
-    private fun openPage(url: String, proxy: String, html: String = "", own: Boolean = html.isNotEmpty()) {
+    private fun openPage(url: String, proxy: String, allowAutoSubmit: Boolean, html: String = "", own: Boolean = html.isNotEmpty()) {
         (_captchaPage.value as? WebPage)?.close()
         val page = when {
             html.isNotEmpty() -> WebPage(html = html, onSubmit = ::onSetupSubmission)
@@ -567,21 +567,17 @@ class AndroidConnectionService(
         _captchaPage.value = page
         _captcha.update { it?.copy(error = "", progress = "") }
         if (own) return // the page submits itself; no cookie/settle detection applies.
-        // A real browser is often let through without any check (it targets the
-        // core's bot-like client): a regular page that stays put counts as passed.
+        // A node's check requires explicit user completion, even on a regular page.
+        // Local checks retain the existing settle policy.
+        if (!allowAutoSubmit) return
         scope.launch {
-            var settledSince = 0L
-            while (_captchaPage.value === page && !page.closed) {
-                val settled = !page.loading && page.url.startsWith("https://") && !YandexDisk.isCheckpoint(page.url)
-                val now = System.currentTimeMillis()
-                if (!settled) settledSince = 0L
-                else if (settledSince == 0L) settledSince = now
-                else if (now - settledSince >= SETTLE_MS) {
-                    log(LogLevel.Info, "Страница Яндекса открылась без проверки, передаю cookies")
-                    submitCaptcha()
-                    return@launch
-                }
-                delay(300)
+            monitorCaptchaAutoSubmit(
+                allowAutoSubmit = allowAutoSubmit,
+                isOpen = { _captchaPage.value === page && !page.closed },
+                isSettled = { !page.loading && page.url.startsWith("https://") && !YandexDisk.isCheckpoint(page.url) },
+            ) {
+                log(LogLevel.Info, "Страница Яндекса открылась без проверки, передаю cookies")
+                submitCaptcha()
             }
         }
     }
@@ -707,7 +703,6 @@ class AndroidConnectionService(
         private const val FALLBACK_DNS = "1.1.1.1"
         private const val POLL_MS = 1000L
         private const val CONNECT_TIMEOUT_MS = 30_000L
-        private const val SETTLE_MS = 1500L
         private const val MAX_LOG_LINES = 5000
         private val IP = Regex("""^[0-9a-fA-F:.]{3,45}$""")
         /** Lines the app's side of the core writes; the rest is the transports' debug log. */
