@@ -77,6 +77,10 @@ class WebPage(
             return existing
         }
         val web = WebView(context)
+        webPageSizing(remote = proxy.isNotEmpty(), setupPage = setupPage)?.let { sizing ->
+            // WRAP_CONTENT enables Chromium's zero layout height for percentage-height pages.
+            web.layoutParams = ViewGroup.LayoutParams(sizing.width, sizing.height)
+        }
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
