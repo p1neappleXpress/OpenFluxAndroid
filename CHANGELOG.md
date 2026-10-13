@@ -3,7 +3,34 @@
 All notable changes to OpenFluxAndroid. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2.6.1] - 2026-10-13
+
+### Fixed
+
+- **2.6.0 was built from an old branch** and lost everything from 2.3.3 to 2.5.1, including the core's Mail.ru
+  fix and the bundled Mail.ru 1.2.0 carrier ("access deny" came back). 2.6.1 is 2.5.1 plus 2.6.0 on core
+  0.7.1, which has both.
+- **cups.online is several times faster**: through the tunnel, 4 rooms went from ~90 KB/s to ~420 KB/s
+  (the carrier no longer sends faster than the server relays, so it stops losing most of what it sends).
+  cups and avito run each room as a lane of one reliable link; a room list made by a new exit node only
+  works with this version or newer.
+- **"Своя нода" installs the 0.7.1 exit-node core** (node-v1.4.0) instead of 0.5.1.
+
+## [2.5.1] - 2026-10-13
+
+Hotfix: core 0.6.1. The Mail.ru document carrier works again — the editor server began rejecting the old
+cursor-field data path with "access deny", so the tunnel now rides the document's chat channel, and the
+bundled scripted Mail.ru carrier (updated to 1.2.0) negotiates permessage-deflate on the WebSocket upgrade so
+it can connect at all.
+
+## [2.5.0] - 2026-10-12
+
+### Changed
+
+- **Core updated to OpenFlux 0.6.0.** A node started from the app can now keep its scripted (`.flux`)
+  transports current and self-heal on its own (`--script-auto-update`): it pulls a published fix, rolls back
+  a bad one, and hot-swaps the new package into the live session with no restart. Also carries a fix to the
+  `node-install.sh` pin so node provisioning verifies the script this build actually ships.
 
 ## [2.4.1] - 2026-10-11
 
