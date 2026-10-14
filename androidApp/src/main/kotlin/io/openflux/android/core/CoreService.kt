@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.net.VpnService
@@ -57,7 +58,8 @@ class CoreService : VpnService() {
     /**
      * The TUN interface: all IPv4 through it, DNS to [dns] (answered by the
      * packet tunnel), this app itself outside, since the core's own traffic
-     * must not loop back into the tunnel.
+     * must not loop back into the tunnel. Android Auto stays outside too: its
+     * phone-to-car link breaks when routed through a VPN.
      */
     fun establish(mtu: Int, dns: String): ParcelFileDescriptor? {
         val builder = Builder()
@@ -68,6 +70,10 @@ class CoreService : VpnService() {
             .addDnsServer(dns)
             .addDisallowedApplication(packageName)
             .setConfigureIntent(openAppIntent(this))
+        for (app in BYPASS_APPS) {
+            // Throws for a package that isn't installed.
+            try { builder.addDisallowedApplication(app) } catch (e: PackageManager.NameNotFoundException) {}
+        }
         if (Build.VERSION.SDK_INT >= 29) builder.setBlocking(true)
         return builder.establish()
     }
@@ -117,6 +123,9 @@ class CoreService : VpnService() {
         private const val CAPTCHA_NOTIFICATION_ID = 9
         private const val CORE_CHANNEL = "openflux_core"
         private const val CAPTCHA_CHANNEL = "openflux_captcha"
+
+        /** Apps kept outside the VPN: Android Auto. */
+        private val BYPASS_APPS = listOf("com.google.android.projection.gearhead")
 
         fun createChannels(context: Context) {
             val manager = context.getSystemService(NotificationManager::class.java)
