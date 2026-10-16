@@ -21,11 +21,12 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import io.openflux.android.web.WebBrowserViews
 import io.openflux.desktop.model.ConnectionState
+import io.openflux.desktop.model.isActive
 import io.openflux.desktop.model.ThemeMode
-import io.openflux.desktop.ui.NoScrollbars
-import io.openflux.desktop.ui.Shortcuts
-import io.openflux.desktop.ui.home.HomeTab
-import io.openflux.desktop.ui.shell.OpenFluxApp
+import io.openflux.app.platform.NoScrollbars
+import io.openflux.app.platform.Shortcuts
+import io.openflux.app.shell.OpenFluxApp
+import io.openflux.app.shell.connectChosen
 
 class MainActivity : ComponentActivity() {
     private val app get() = openFlux
@@ -43,9 +44,10 @@ class MainActivity : ComponentActivity() {
         val container = app.container
         if (savedInstanceState == null) {
             handleLink(intent)
+            connectFromTile(intent)
             // "Подключаться при запуске", once per launch of the app, not per screen rotation.
             if (container.settings.settings.value.autoConnect && container.connection.state.value == ConnectionState.Idle) {
-                HomeTab.connectSelected(container)
+                connectChosen(container)
             }
         }
         setContent {
@@ -68,6 +70,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleLink(intent)
+        connectFromTile(intent)
     }
 
     override fun onStart() {
@@ -86,10 +89,24 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /** The quick-settings tile opened the app to connect: the VPN permission is asked here, then the profile connects. */
+    private fun connectFromTile(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_CONNECT, false) != true) return
+        intent.removeExtra(EXTRA_CONNECT)
+        val container = app.container
+        if (!container.connection.state.value.isActive) connectChosen(container)
+    }
+
     /** An openflux:// link from the system camera or a chat goes to the import dialog. */
     private fun handleLink(intent: Intent?) {
         val link = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
-        if (link.startsWith("openflux://")) app.container.incomingLink.value = link
+        if (app.signIn.deliver(link)) return
+        if (link.startsWith("openflux://") || io.openflux.desktop.model.OpenFluxBot.looksLike(link)) app.container.incomingLink.value = link
+    }
+
+    companion object {
+        /** Set by the quick-settings tile: connect the selected profile once the app is open. */
+        const val EXTRA_CONNECT = "io.openflux.android.CONNECT"
     }
 
     internal fun launchVpnConsent(intent: Intent) = vpnConsent.launch(intent)

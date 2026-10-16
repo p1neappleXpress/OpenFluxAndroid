@@ -88,9 +88,31 @@ internal class PacketTunnel(
         }
     }
 
+    /**
+     * Writes a packet to the interface. A full interface queue (ENOBUFS, EAGAIN, ENOMEM) is congestion, not a broken
+     * interface: wait a moment and try again, and drop the packet after a few tries as a busy network card would
+     * (TCP sends it again). Only other failures end the tunnel.
+     */
     private fun inject(packet: ByteArray) {
-        synchronized(outputLock) { if (active) output.write(packet) }
+        var attempt = 0
+        while (active) {
+            try {
+                synchronized(outputLock) { if (active) output.write(packet) }
+                return
+            } catch (e: IOException) {
+                if (!isCongestion(e)) throw e
+                if (++attempt > WRITE_RETRIES) {
+                    if (active && droppedAtInterface.getAndIncrement() % 200L == 0L) {
+                        onProblem("VPN-интерфейс переполнен: пакеты отбрасываются (${e.message})")
+                    }
+                    return
+                }
+                Thread.sleep(attempt.toLong())
+            }
+        }
     }
+
+    private val droppedAtInterface = AtomicLong()
 
     /** Answers the captured query by relaying it to [dnsServer] over plain UDP. */
     private fun forwardDns(request: ByteArray) {
@@ -125,6 +147,13 @@ internal class PacketTunnel(
     }
 
     private companion object {
+        const val WRITE_RETRIES = 8
+
+        fun isCongestion(e: IOException): Boolean {
+            val m = e.message.orEmpty()
+            return m.contains("ENOBUFS") || m.contains("EAGAIN") || m.contains("ENOMEM")
+        }
+
         fun isIpv4Tcp(p: ByteArray) = p.size >= 20 && (p[0].toInt() ushr 4) == 4 && (p[9].toInt() and 0xff) == 6
 
         /** Non-DNS UDP: the exit forwards it like any other packet. */

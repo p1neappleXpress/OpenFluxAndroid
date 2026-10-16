@@ -1,16 +1,28 @@
 package io.openflux.android.node
 
+import io.openflux.desktop.service.Accounts
+import io.openflux.desktop.service.AccountException
+import io.openflux.android.web.WebPage
 import io.openflux.bridge.mobile.Mobile
+import io.openflux.desktop.model.InstalledChannel
 import io.openflux.desktop.model.LogLevel
 import io.openflux.desktop.model.LogLine
 import io.openflux.desktop.model.NewChannel
+import io.openflux.desktop.model.NodeCoreSource
+import io.openflux.desktop.model.NodeDocuments
+import io.openflux.desktop.model.NodeMode
 import io.openflux.desktop.model.NodePlan
 import io.openflux.desktop.model.NodeTransport
 import io.openflux.desktop.model.NodeWizardException
 import io.openflux.desktop.model.ServerProbe
 import io.openflux.desktop.model.SshTarget
+import io.openflux.desktop.model.YandexDisk
+import io.openflux.desktop.model.YandexDocument
 import io.openflux.desktop.service.NodeWizardService
+import io.openflux.app.platform.BrowserPage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,25 +38,27 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.coroutineContext
 
 /**
  * The wizard's server side through the core's Node* calls (SSH, the pinned
- * installer). The calls block, so they run off the main thread, one at a
- * time.
+ * installer), and the channel's Yandex document created in a WebView. The
+ * calls block, so they run off the main thread, one at a time.
  */
-class AndroidNodeWizard : NodeWizardService {
+class AndroidNodeWizard(private val accounts: Accounts) : NodeWizardService {
     private val json = Json { ignoreUnknownKeys = true }
     private val lock = Mutex()
+    override val documentPage: StateFlow<BrowserPage?> = accounts.page
 
     private val lineIds = AtomicLong()
     private val _logs = MutableStateFlow<List<LogLine>>(emptyList())
     override val logs: StateFlow<List<LogLine>> = _logs.asStateFlow()
 
-    override suspend fun connect(target: SshTarget): ServerProbe {
-        val reply = call("nodeConnect", "${target.host}:${target.port} (${target.user})") {
+    override suspend fun connect(target: SshTarget, source: NodeCoreSource): ServerProbe {
+        val reply = call("nodeConnect", "${target.host}:${target.port} (${target.user}) core=${source.id}") {
             Mobile.nodeConnect(
                 target.host, target.port.toLong(), target.user,
-                target.password, target.privateKey, target.passphrase, target.hostKey,
+                target.password, target.privateKey, target.passphrase, target.hostKey, source.id,
             )
         }
         return json.decodeFromJsonElement(ServerProbe.serializer(), reply.getValue("probe"))
@@ -55,9 +69,9 @@ class AndroidNodeWizard : NodeWizardService {
         return NewChannel(reply.string("id"), reply.string("key"))
     }
 
-    override suspend fun plan(channel: String, transports: List<NodeTransport>, autoUpdate: Boolean): NodePlan {
-        val reply = call("nodePlan", "channel=$channel ${transports.names()} autoUpdate=$autoUpdate") {
-            Mobile.nodePlan(channel, 0, transports.json(), autoUpdate)
+    override suspend fun plan(channel: String, transports: List<NodeTransport>, withCookies: Boolean, autoUpdate: Boolean, mode: NodeMode): NodePlan {
+        val reply = call("nodePlan", "channel=$channel ${transports.names()} withCookies=$withCookies autoUpdate=$autoUpdate mode=${mode.cli}") {
+            Mobile.nodePlan(channel, 0, transports.json(), withCookies, autoUpdate, mode.cli)
         }
         return json.decodeFromJsonElement(NodePlan.serializer(), reply.getValue("plan"))
     }
@@ -68,18 +82,48 @@ class AndroidNodeWizard : NodeWizardService {
         port: Int,
         autoUpdate: Boolean,
         sudoPassword: String,
+        cookieHeader: String,
+        mode: NodeMode,
     ) {
-        call("nodeApply", "channel=${channel.id} ${transports.names()} port=$port autoUpdate=$autoUpdate") {
-            Mobile.nodeApply(channel.id, transports.json(), channel.key, port.toLong(), autoUpdate, sudoPassword)
+        call("nodeApply", "channel=${channel.id} ${transports.names()} port=$port autoUpdate=$autoUpdate mode=${mode.cli}") {
+            Mobile.nodeApply(channel.id, transports.json(), channel.key, port.toLong(), autoUpdate, sudoPassword, cookieHeader, mode.cli)
         }
     }
 
     override suspend fun createCupsRooms(): String =
         call("nodeCreateCupsRooms") { Mobile.nodeCreateCupsRooms() }.string("rooms")
 
+    override suspend fun createAvitoRooms(): String =
+        call("nodeCreateAvitoRooms") { Mobile.nodeCreateAvitoRooms() }.string("rooms")
+
     override suspend fun remove(channel: String, sudoPassword: String) {
         call("nodeRemove", "channel=$channel") { Mobile.nodeRemove(channel, sudoPassword) }
     }
+
+    override suspend fun showChannel(channel: String, sudoPassword: String): InstalledChannel {
+        val reply = call("nodeShowChannel", "channel=$channel") { Mobile.nodeShowChannel(channel, sudoPassword) }
+        return json.decodeFromJsonElement(InstalledChannel.serializer(), reply.getValue("channel"))
+    }
+
+    override suspend fun setTransports(channel: String, transports: List<NodeTransport>, sudoPassword: String, cookieHeader: String, mode: NodeMode?): InstalledChannel {
+        val reply = call("nodeSetTransports", "channel=$channel ${transports.names()} mode=${mode?.cli ?: "keep"}") {
+            Mobile.nodeSetTransports(channel, transports.json(), cookieHeader, sudoPassword, mode?.cli.orEmpty())
+        }
+        return json.decodeFromJsonElement(InstalledChannel.serializer(), reply.getValue("channel"))
+    }
+
+    override suspend fun channelShareLink(name: String, key: String, host: String, port: Int, transports: List<NodeTransport>, context: String): String =
+        withContext(Dispatchers.IO) {
+            log(LogLevel.Debug, "мастер: → nodeShareLinkContext $host:$port ${transports.names()}")
+            try {
+                Mobile.nodeShareLinkContext(name, transports.json(), key, host, port.toLong(), context).also {
+                    log(LogLevel.Debug, "мастер: ← nodeShareLinkContext $host:$port ok")
+                }
+            } catch (e: Exception) {
+                log(LogLevel.Error, "мастер: ← nodeShareLinkContext $host:$port ошибка: ${e.message}")
+                throw NodeWizardException(e.message ?: "Не удалось собрать ссылку канала")
+            }
+        }
 
     override suspend fun checkDocument(documentUrl: String) {
         call("nodeCheckDocument") { Mobile.nodeCheckDocument(documentUrl) }
@@ -105,7 +149,21 @@ class AndroidNodeWizard : NodeWizardService {
             .getOrDefault(emptySet())
     }
 
+    /**
+     * The document with the saved Yandex account (signing in first when
+     * needed), in the sign-in window the Accounts tab uses (full screen).
+     */
+    override suspend fun createDocument(fileName: String, onStep: (String) -> Unit): YandexDocument =
+        try {
+            accounts.createWizardDocument(fileName, onStep)
+        } catch (e: AccountException) {
+            throw NodeWizardException(e.message ?: "Не получилось создать документ")
+        }
+
+    override fun cancelDocument() = accounts.cancel()
+
     override fun close() {
+        cancelDocument()
         log(LogLevel.Info, "мастер: закрываю ядро")
         // Closes SSH, which removes the downloaded installer from the server.
         Thread { Mobile.nodeDisconnect() }.start()

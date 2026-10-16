@@ -1,7 +1,7 @@
 package io.openflux.android.web
 
 import io.openflux.desktop.service.SettingsPageHost
-import io.openflux.desktop.ui.BrowserPage
+import io.openflux.app.platform.BrowserPage
 
 /** Shows a script's settings wizard in a WebView, answered on its own channel (never the connection's setup requests). */
 object AndroidSettingsPageHost : SettingsPageHost {

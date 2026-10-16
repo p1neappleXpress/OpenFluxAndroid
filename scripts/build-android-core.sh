@@ -43,11 +43,13 @@ trap '[ -s "$out/openflux.aar" ] || rm -f "$out/openflux.aar"' EXIT
 
 # github.com/wlynxg/anet (pulled in by the oneme/WebRTC transport) still uses
 # a //go:linkname Go's linker rejects since 1.23; -checklinkname=0 lets it link.
+# max-page-size=16384: devices with 16 KB pages (Android 15+) otherwise run the
+# app in a compatibility mode and warn about it on every start.
 (cd "$core/mobile" && "$gomobile" bind \
   -target=android \
   -androidapi=26 \
   -javapkg=io.openflux.bridge \
-  -ldflags="-checklinkname=0 -s -w" \
+  -ldflags="-checklinkname=0 -s -w -extldflags=-Wl,-z,max-page-size=16384" \
   -o "$out/openflux.aar" \
   .)
 rm -f "$out/openflux-sources.jar"

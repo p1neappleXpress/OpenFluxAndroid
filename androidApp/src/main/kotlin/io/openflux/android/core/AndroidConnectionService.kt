@@ -1,5 +1,12 @@
 package io.openflux.android.core
 
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.drop
+import io.openflux.desktop.service.Accounts
+import io.openflux.desktop.model.ProfileSource
+import io.openflux.desktop.model.AccountKind
+import io.openflux.desktop.model.AccountCookies
+import io.openflux.desktop.data.CookieStoreSeeder
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -12,20 +19,22 @@ import io.openflux.bridge.mobile.Mobile
 import io.openflux.desktop.model.AppSettings
 import io.openflux.desktop.model.CaptchaPrompt
 import io.openflux.desktop.model.ConnectionMode
+import io.openflux.desktop.model.ConnectionNarrative
 import io.openflux.desktop.model.ConnectionState
 import io.openflux.desktop.model.CoreConfig
 import io.openflux.desktop.model.ExitAddress
 import io.openflux.desktop.model.LogLevel
 import io.openflux.desktop.model.LogLine
+import io.openflux.desktop.model.NetworkKind
 import io.openflux.desktop.model.Profile
 import io.openflux.desktop.model.TrafficStats
 import io.openflux.desktop.model.TransportType
 import io.openflux.desktop.model.YandexDisk
 import io.openflux.desktop.service.ConnectionService
 import io.openflux.desktop.service.SettingsRepository
-import io.openflux.desktop.ui.BrowserPage
-import io.openflux.desktop.ui.Format
-import io.openflux.desktop.ui.look
+import io.openflux.app.home.statusLine
+import io.openflux.app.platform.BrowserPage
+import io.openflux.app.text.Fmt
 import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -60,6 +69,7 @@ class AndroidConnectionService(
     private val context: Context,
     private val settings: SettingsRepository,
     private val bridge: ActivityBridge,
+    private val accounts: Accounts,
     /** Installed script transports, to resolve a SCRIPT carrier's file + pinned key. */
     private val scripts: AndroidScriptRepository? = null,
 ) : ConnectionService {
@@ -99,6 +109,10 @@ class AndroidConnectionService(
         @Volatile var started = false
         @Volatile var connectedSince = 0L
         @Volatile var notice = ""
+        /** The sign-ins handed to the exit this run, not to send the same twice. */
+        val pushed = java.util.concurrent.ConcurrentHashMap<AccountKind, Map<String, String>>()
+        /** The networks the carriers are bound to (bonding), null when none. */
+        @Volatile var networks: NetworkBinding? = null
     }
 
     @Volatile private var run: Run? = null
@@ -109,18 +123,59 @@ class AndroidConnectionService(
     /** The core's pending check shown now, and how the user left it. */
     @Volatile private var captchaUrl: String? = null
     @Volatile private var captchaSolved = false
+    /** "Позже": checks for a Yandex page stay quiet until then (the other transports carry on); a new connection resets it. */
+    @Volatile private var captchaSnoozedUntil = 0L
+
+    private val cookieStore get() = File(context.filesDir, "transport-cookies.json")
 
     init {
-        Mobile.setCookieStorePath(File(context.filesDir, "transport-cookies.json").path)
+        Mobile.setCookieStorePath(cookieStore.path)
+        // A fresh sign-in (after it expired) goes on to your own node at once.
+        scope.launch {
+            accounts.sessions.drop(1).collect { sessions ->
+                val current = run ?: return@collect
+                if (_state.value !is ConnectionState.Connected || !ownsExit(current)) return@collect
+                for ((kind, session) in sessions) {
+                    if (!kind.opensSignedIn) continue
+                    if (!session.expired && current.pushed[kind] != session.cookies) pushQuietly(current, kind)
+                }
+            }
+        }
+    }
+
+    /** Your own node (from the wizard): it may get your sign-in without asking. */
+    private fun ownsExit(run: Run) =
+        run.kind != Kind.Exit && run.profile.session && run.profile.source == ProfileSource.Node && run.settings.useAccountSessions
+
+    private fun pushQuietly(run: Run, kind: AccountKind) {
+        runCatching { pushTo(run, kind) }
+            .onFailure { log(LogLevel.Warning, "Не удалось передать вход ${kind.label} ноде: ${it.message}") }
+    }
+
+    override suspend fun pushAccountToExit(kind: AccountKind): Int {
+        val current = run ?: throw IllegalStateException("Нет подключения к ноде")
+        return withContext(Dispatchers.IO) { pushTo(current, kind) }
+    }
+
+    private fun pushTo(run: Run, kind: AccountKind): Int {
+        check(run.kind != Kind.Exit && run.profile.session) { "Передать вход можно только ноде профиля Session" }
+        val session = accounts.validSession(kind) ?: throw IllegalStateException("Сначала войдите в ${kind.label}")
+        val types = kind.signedInTransports.joinToString(",") { it.cliName }
+        val sent = Mobile.offerExitCookies(types, AccountCookies.header(session.cookies)).toInt()
+        check(sent > 0) { "В профиле нет транспортов ${kind.label}" }
+        run.pushed[kind] = session.cookies
+        log(LogLevel.Success, "Вход ${kind.label} передан ноде ($sent транспорт.)")
+        return sent
     }
 
     // ---- connect / disconnect ----
 
-    override fun connect(profile: Profile) {
+    override fun connect(profile: Profile, mode: ConnectionMode?) {
+        captchaSnoozedUntil = 0
         scope.launch {
             lifecycle.withLock {
                 run?.let { stop(it, restart = true) }
-                begin(profile)
+                begin(profile, mode)
             }
         }
     }
@@ -129,8 +184,8 @@ class AndroidConnectionService(
         scope.launch { lifecycle.withLock { run?.let { stop(it, restart = false) } } }
     }
 
-    private suspend fun begin(profile: Profile) {
-        val current = settings.settings.value
+    private suspend fun begin(profile: Profile, mode: ConnectionMode?) {
+        val current = settings.settings.value.let { s -> mode?.let { s.copy(mode = it) } ?: s }
         _exitShareLink.value = null
         _exitAddress.value = ExitAddress.Unknown
         _traffic.value = TrafficStats()
@@ -148,11 +203,22 @@ class AndroidConnectionService(
             current.fullTunnel -> Kind.Vpn
             else -> Kind.Proxy
         }
+        if (kind == Kind.Exit) profile.exitProblem()?.let {
+            fail(profile, it)
+            return
+        }
         if (kind == Kind.Vpn && !bridge.prepareVpn(context)) {
             fail(profile, "Android не разрешил OpenFlux включить VPN")
             return
         }
         bridge.requestNotifications()
+        if (current.useAccountSessions) {
+            // The library reads its store once, when given the path.
+            runCatching {
+                CookieStoreSeeder.seed(cookieStore, profile, accounts.sessions.value) { "${it.type.cliName} ${it.value}" }
+                Mobile.setCookieStorePath(cookieStore.path)
+            }.onFailure { log(LogLevel.Warning, "Вход в аккаунт не подставлен: ${it.message}") }
+        }
         val next = Run(profile, current, kind)
         run = next
         _socksAddress.value = if (kind == Kind.Proxy) proxyAddress(current) else null
@@ -187,6 +253,11 @@ class AndroidConnectionService(
             Kind.Vpn -> Mobile.stop()
             Kind.Proxy -> Mobile.stopProxy()
             Kind.Exit -> Mobile.stopExit()
+        }
+        current.networks?.let {
+            Mobile.setNetworkBinder(null)
+            it.close()
+            current.networks = null
         }
         drainLogs(current)
         if (run === current) run = null
@@ -264,6 +335,7 @@ class AndroidConnectionService(
     // ---- running the core ----
 
     private suspend fun execute(current: Run, host: CoreService) {
+        bindNetworks(current)
         var error = startCarrier(current)
         // Some transports (Volga) fail Start outright on a Yandex check; a
         // retry replays the cookies the user got.
@@ -281,12 +353,33 @@ class AndroidConnectionService(
         }
     }
 
+    /**
+     * Brings up the networks the profile's carriers are bound to (bonding:
+     * mobile data next to Wi-Fi) before the core dials; a network that
+     * does not come up leaves its carriers out, the others carry on.
+     */
+    private suspend fun bindNetworks(current: Run) {
+        val kinds = current.profile.carriers.map { it.network }.toSet() - NetworkKind.Default
+        if (!current.profile.session || kinds.isEmpty()) return
+        val binding = NetworkBinding(context, kinds)
+        current.networks = binding
+        binding.await(NETWORK_WAIT_MS)
+        val up = binding.available
+        val missing = kinds.filter { it.cli !in up }.joinToString { it.label }
+        log(
+            if (missing.isEmpty()) LogLevel.Info else LogLevel.Warning,
+            "Сети для транспортов: " + kinds.joinToString { it.label + if (it.cli in up) " есть" else " нет" } +
+                if (missing.isEmpty()) "" else ". Транспорты на «$missing» не подключатся, пока сеть не появится",
+        )
+    }
+
     private fun startCarrier(current: Run): String {
         val profile = current.profile
         val secret = profile.secret
         // A script carrier runs the JS engine, an experimental feature that is off until the user turns it on.
         if (!current.settings.experimental && profile.carriers.any { it.type == TransportType.SCRIPT }) return CoreConfig.SCRIPTS_OFF
         Mobile.setDebugLevel(current.settings.debugLevel.toLong())
+        Mobile.setNetworkBinder(current.networks)
         // The mode without a server: a PHP node on a web hosting, over cups.online or a Mail.ru document.
         if (profile.stream) {
             val type = profile.transport.cliName
@@ -321,13 +414,19 @@ class AndroidConnectionService(
         while (!current.stopping && !Mobile.isConnected()) {
             // Only the phone's own checks hold connecting up; the node's are
             // passed once the tunnel runs.
-            if (Mobile.pendingCaptchaURL().isNotEmpty() && Mobile.pendingCaptchaProxy().isEmpty()) {
-                if (!awaitCaptcha(current)) {
-                    if (!current.stopping) failRun(current, "Проверка Яндекса не пройдена")
+            if (Mobile.pendingCaptchaURL().isNotEmpty() && Mobile.pendingCaptchaProxy().isEmpty() &&
+                System.currentTimeMillis() >= captchaSnoozedUntil
+            ) {
+                if (awaitCaptcha(current)) {
+                    waited = 0
+                    continue
+                }
+                if (current.stopping) return
+                // "Позже": the other transports may still bring the connection up; only the wait for them runs out.
+                if (System.currentTimeMillis() >= captchaSnoozedUntil) {
+                    failRun(current, "Проверка Яндекса не пройдена")
                     return
                 }
-                waited = 0
-                continue
             }
             if (waited >= CONNECT_TIMEOUT_MS) {
                 failRun(current, "Транспорт не подключился за ${CONNECT_TIMEOUT_MS / 1000} секунд")
@@ -436,9 +535,16 @@ class AndroidConnectionService(
         if (first) current.connectedSince = System.currentTimeMillis()
         if (_state.value !is ConnectionState.Connected) {
             _state.value = ConnectionState.Connected(current.profile, current.settings.mode, current.connectedSince)
-            if (first) log(LogLevel.Success, if (current.kind == Kind.Exit) "Нода запущена" else "Подключено к ноде")
+            if (first) {
+                val said = if (current.kind == Kind.Exit) ConnectionNarrative.linkUp(ConnectionMode.Exit, emptyList())
+                else ConnectionNarrative.linkUpUnchecked(_traffic.value.activeCarriers)
+                log(said.level, said.text)
+            }
             else log(LogLevel.Info, "Связь с нодой восстановлена")
             if (current.kind != Kind.Exit) refreshExitAddress()
+            if (first && ownsExit(current)) scope.launch {
+                accounts.sessions.value.values.filter { !it.expired && it.kind.opensSignedIn }.forEach { pushQuietly(current, it.kind) }
+            }
         }
     }
 
@@ -455,13 +561,13 @@ class AndroidConnectionService(
     }
 
     private fun notificationText(current: Run): String {
-        val look = _state.value.look().title
+        val look = statusLine(_state.value)
         val traffic = _traffic.value
         // Which carriers: "Volga + Мой транспорт", a script by its own name (the core only calls it "script").
         val names = traffic.activeCarriers
         val via = if (names.isEmpty()) "" else " · " + current.profile.carrierLabels(names, scripts?.scripts?.value.orEmpty())
         return when (_state.value) {
-            is ConnectionState.Connected -> "$look · ↓ ${Format.speed(traffic.downBytesPerSec)}  ↑ ${Format.speed(traffic.upBytesPerSec)}$via"
+            is ConnectionState.Connected -> "$look · ↓ ${Fmt.speed(traffic.downBytesPerSec)}  ↑ ${Fmt.speed(traffic.upBytesPerSec)}$via"
             else -> if (current.notice.isNotEmpty()) "$look · ${current.notice}" else look
         }
     }
@@ -491,7 +597,7 @@ class AndroidConnectionService(
         }
         // Any other VPN/exit mode: only a browser the user opens can reach ipify.
         if (checked.kind != Kind.Proxy) {
-            if (run === checked) _exitAddress.value = ExitAddress.Unavailable("откройте api.ipify.org в браузере")
+            if (run === checked) _exitAddress.value = ExitAddress.NotCheckable("в режиме VPN видно в браузере: api.ipify.org")
             return
         }
         _exitAddress.value = ExitAddress.Checking
@@ -523,6 +629,11 @@ class AndroidConnectionService(
         }
         val identity = url.ifEmpty { html }
         if (identity == captchaUrl) return
+        // A script's own setup page was asked for by the person; only a Yandex check is snoozed.
+        if (!own && System.currentTimeMillis() < captchaSnoozedUntil) {
+            Mobile.cancelCaptcha()
+            return
+        }
         captchaUrl = identity
         captchaSolved = false
         val proxy = Mobile.pendingCaptchaProxy().orEmpty()
@@ -635,6 +746,7 @@ class AndroidConnectionService(
     }
 
     override fun dismissCaptcha() {
+        if (_captcha.value?.own == false) captchaSnoozedUntil = System.currentTimeMillis() + CAPTCHA_SNOOZE_MS
         captchaSolved = false
         Mobile.cancelCaptcha()
         clearCaptcha()
@@ -663,6 +775,7 @@ class AndroidConnectionService(
             // The core itself only emits up to the level startCarrier set via
             // Mobile.setDebugLevel, so nothing left to filter here.
             log(levelOf(line), line)
+            ConnectionNarrative.readCoreLine(line)?.let { log(it.level, it.text) }
         }
     }
 
@@ -707,8 +820,10 @@ class AndroidConnectionService(
         private const val FALLBACK_DNS = "1.1.1.1"
         private const val POLL_MS = 1000L
         private const val CONNECT_TIMEOUT_MS = 30_000L
+        private const val NETWORK_WAIT_MS = 5_000L
         private const val SETTLE_MS = 1500L
         private const val MAX_LOG_LINES = 5000
+        private const val CAPTCHA_SNOOZE_MS = 10 * 60_000L
         private val IP = Regex("""^[0-9a-fA-F:.]{3,45}$""")
         /** Lines the app's side of the core writes; the rest is the transports' debug log. */
         private val APP_TAGS = listOf("[ANDROID]", "[NODE]", "[ERROR]", "[SUCCESS]", "[WARN")

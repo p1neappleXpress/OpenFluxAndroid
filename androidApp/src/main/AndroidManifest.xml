@@ -4,6 +4,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -12,6 +13,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- The QR scanner (zxing-android-embedded) asks for it when opened. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Installing an update of this app that was downloaded from its GitHub releases (the person confirms each one). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
@@ -41,7 +44,38 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="openflux" />
             </intent-filter>
+            <!-- The OpenFlux bot's connection links (link.openflux.dev/<token>): offered next to the browser. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="link.openflux.dev" />
+            </intent-filter>
+            <!-- The way back from the OpenFlux sign-in page (id.openflux.dev) with its one-time code. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="io.openflux.client" />
+            </intent-filter>
         </activity>
+
+        <!-- The quick-settings tile: connect / disconnect from the status bar's panel. -->
+        <service
+            android:name=".platform.ConnectTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_power"
+            android:label="OpenFlux"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data android:name="android.service.quicksettings.ACTIVE_TILE" android:value="false" />
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
+
+        <!-- The system installer's answer while updating the app. -->
+        <receiver android:name=".platform.UpdateInstallReceiver" android:exported="false" />
 
         <!-- The library's scanner is landscape-only by default. -->
         <activity
